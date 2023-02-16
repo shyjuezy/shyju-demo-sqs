@@ -1,0 +1,85 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform:
+  - AWS::Serverless-2016-10-31
+
+Globals:
+  Function:
+    Runtime: python3.9
+    Tracing: Active
+    AutoPublishAlias: !Ref AliasName
+
+Parameters:
+  AliasName:
+    Description: Alias to use when creating API and lambda
+    Type: String
+    Default: latest
+
+Conditions:
+  alias: !Not [!Equals [!Ref AliasName, "latest"]]
+
+Resources:
+  MySQSQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !If [alias, !Sub "${AliasName}-MyQueue", "MyQueue"]
+      VisibilityTimeout: 45
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt MySQSQueueDLQ.Arn
+        maxReceiveCount: 3
+
+  MySQSQueueDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !If [alias, !Sub "${AliasName}-MyQueueDLQ", "MyQueueDLQ"]
+
+  MyLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !If [alias, !Sub "${AliasName}-MyLambda", "MyLambda"]
+      CodeUri: ./build
+      Handler: main.lambda_handler
+      Role: !GetAtt MyLambdaRole.Arn
+      Timeout: 15
+      Events:
+        MySQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt MySQSQueue.Arn
+
+  MyLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !If [alias, !Sub "${AliasName}-MyLambdaRole", "MyLambdaRole"]
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Action:
+          - sts:AssumeRole
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+      Policies:
+      - PolicyName: MyPolicy
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - sqs:SendMessage
+            Resource: !GetAtt MySQSQueue.Arn
+          - Effect: Allow
+            Action:
+              - 'logs:CreateLogGroup'
+              - 'logs:CreateLogStream'
+              - 'logs:PutLogEvents'
+            Resource:
+              - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*'
+
+  MyLambdaPermisson:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt MyLambdaFunction.Arn
+      Principal: sqs.amazonaws.com
+      SourceArn: !GetAtt MySQSQueue.Arn
